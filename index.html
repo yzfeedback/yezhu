@@ -380,7 +380,7 @@
       <div class="upload-zone" onclick="document.getElementById('fileInput').click()">
         <div class="icon">📷</div>
         <div>点击上传图片</div>
-        <div class="hint">支持 JPG/PNG，单文件最大 5MB</div>
+        <div class="hint">支持 JPG/PNG，单文件最大 20MB（自动压缩）</div>
       </div>
       <input type="file" id="fileInput" accept="image/jpeg,image/png" multiple onchange="handleFiles(event)">
       <div class="preview-list" id="previewList"></div>
@@ -560,22 +560,66 @@ function toggleAdmin() {
   }
 }
 
-// ==================== 文件处理 ====================
-function handleFiles(event) {
-  const files = Array.from(event.target.files);
-  const MAX_SIZE = 5 * 1024 * 1024;
-  files.forEach(file => {
-    if (file.size > MAX_SIZE) {
-      showToast(`文件 ${file.name} 超过5MB限制`);
+// ==================== 图片压缩 ====================
+function compressImage(file) {
+  return new Promise((resolve, reject) => {
+    // 小于 200KB 不压缩
+    if (file.size < 200 * 1024) {
+      const reader = new FileReader();
+      reader.onload = e => resolve(e.target.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
       return;
     }
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      uploadedFiles.push({ name: file.name, type: file.type, dataUrl: e.target.result });
-      renderPreviews();
+
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const MAX_W = 1200;
+      const MAX_H = 1200;
+      let w = img.width, h = img.height;
+      if (w > MAX_W || h > MAX_H) {
+        const ratio = Math.min(MAX_W / w, MAX_H / h);
+        w = Math.round(w * ratio);
+        h = Math.round(h * ratio);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      // JPEG 质量 0.7 保持清晰度同时大幅压缩
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+      resolve(dataUrl);
     };
-    reader.readAsDataURL(file);
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片加载失败')); };
+    img.src = url;
   });
+}
+
+// ==================== 文件处理 ====================
+async function handleFiles(event) {
+  const files = Array.from(event.target.files);
+  const MAX_SIZE = 20 * 1024 * 1024; // 20MB
+  for (const file of files) {
+    if (file.size > MAX_SIZE) {
+      showToast(`文件 ${file.name} 超过20MB限制`);
+      continue;
+    }
+    if (!file.type.match(/^image\/(jpeg|png)$/)) {
+      showToast(`文件 ${file.name} 不是支持的图片格式`);
+      continue;
+    }
+    try {
+      const dataUrl = await compressImage(file);
+      uploadedFiles.push({ name: file.name, type: 'image/jpeg', dataUrl });
+      renderPreviews();
+      saveDraft(); // 压缩完后保存草稿
+    } catch (err) {
+      showToast(`图片 ${file.name} 处理失败`);
+    }
+  }
   event.target.value = '';
 }
 
@@ -583,7 +627,7 @@ function renderPreviews() {
   document.getElementById('previewList').innerHTML = uploadedFiles.map((f, i) => `
     <div class="preview-item">
       <img src="${f.dataUrl}" alt="${f.name}">
-      <button class="del" onclick="uploadedFiles.splice(${i},1);renderPreviews()">✕</button>
+      <button class="del" onclick="uploadedFiles.splice(${i},1);renderPreviews();saveDraft()">✕</button>
     </div>
   `).join('');
 }
@@ -640,13 +684,33 @@ async function submitFeedback() {
 
   const btn = document.getElementById('submitBtn');
   btn.disabled = true;
-  btn.textContent = '提交中...';
+  btn.textContent = '正在提交...';
 
   try {
     let body = description;
     if (uploadedFiles.length > 0) {
       body += '\n\n---\n📎 证据图片：\n';
       uploadedFiles.forEach(f => { body += `\n![${f.name}](${f.dataUrl})`; });
+    }
+
+    // 最终检查：body 太大则进一步压缩图片
+    if (body.length > 50000) {
+      showToast('图片较多，正在进一步压缩...');
+      const compressedFiles = [];
+      for (const f of uploadedFiles) {
+        const dataUrl = await compressImageMore(f.dataUrl);
+        compressedFiles.push({ ...f, dataUrl });
+      }
+      uploadedFiles = compressedFiles;
+      body = description + '\n\n---\n📎 证据图片：\n';
+      uploadedFiles.forEach(f => { body += `\n![${f.name}](${f.dataUrl})`; });
+    }
+
+    if (body.length > 60000) {
+      showToast('图片总大小仍过大，请减少图片数量或尺寸');
+      btn.disabled = false;
+      btn.textContent = '✅ 匿名提交反馈';
+      return;
     }
 
     await createIssue(
@@ -668,6 +732,31 @@ async function submitFeedback() {
 
   btn.disabled = false;
   btn.textContent = '✅ 匿名提交反馈';
+}
+
+// 更强的压缩（用于二次压缩）
+function compressImageMore(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const MAX_W = 600;
+      const MAX_H = 600;
+      let w = img.width, h = img.height;
+      if (w > MAX_W || h > MAX_H) {
+        const ratio = Math.min(MAX_W / w, MAX_H / h);
+        w = Math.round(w * ratio);
+        h = Math.round(h * ratio);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL('image/jpeg', 0.5));
+    };
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
 }
 
 // ==================== 管理登录 ====================
@@ -880,7 +969,7 @@ document.getElementById('description').addEventListener('input', onDraftChange);
 // 加载草稿
 loadDraft();
 
-console.log('业主反馈平台 v2.1 已加载（GitHub Issues 云端后端 + 草稿保存）');
+console.log('业主反馈平台 v2.2 已加载（GitHub Issues 云端后端 + 草稿保存 + 图片自动压缩）');
 </script>
 </body>
 </html>
