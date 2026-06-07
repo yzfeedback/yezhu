@@ -588,6 +588,48 @@ function renderPreviews() {
   `).join('');
 }
 
+// ==================== 草稿自动保存 ====================
+const DRAFT_KEY = 'yezhu_draft';
+
+function saveDraft() {
+  const category = document.getElementById('category').value;
+  const description = document.getElementById('description').value;
+  if (!category && !description && uploadedFiles.length === 0) return;
+  localStorage.setItem(DRAFT_KEY, JSON.stringify({
+    category,
+    description,
+    files: uploadedFiles,
+    savedAt: Date.now()
+  }));
+}
+
+function loadDraft() {
+  try {
+    const draft = JSON.parse(localStorage.getItem(DRAFT_KEY));
+    if (!draft) return;
+    if (draft.category) document.getElementById('category').value = draft.category;
+    if (draft.description) document.getElementById('description').value = draft.description;
+    if (draft.files && draft.files.length > 0) {
+      uploadedFiles = draft.files;
+      renderPreviews();
+    }
+    if (draft.category || draft.description || (draft.files && draft.files.length > 0)) {
+      showToast('📝 已恢复上次未完成的填写', 'success');
+    }
+  } catch (e) {}
+}
+
+function clearDraft() {
+  localStorage.removeItem(DRAFT_KEY);
+}
+
+// 自动保存：输入时实时保存
+let draftTimer = null;
+function onDraftChange() {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(saveDraft, 500);
+}
+
 // ==================== 提交反馈 ====================
 async function submitFeedback() {
   const category = document.getElementById('category').value;
@@ -617,6 +659,7 @@ async function submitFeedback() {
     document.getElementById('description').value = '';
     uploadedFiles = [];
     renderPreviews();
+    clearDraft();
     showToast('✅ 反馈提交成功，感谢您的参与！', 'success');
   } catch (err) {
     console.error(err);
@@ -830,7 +873,14 @@ function exportData() {
 }
 
 // ==================== 初始化 ====================
-console.log('业主反馈平台 v2.0 已加载（GitHub Issues 云端后端）');
+// 绑定草稿自动保存
+document.getElementById('category').addEventListener('change', onDraftChange);
+document.getElementById('description').addEventListener('input', onDraftChange);
+
+// 加载草稿
+loadDraft();
+
+console.log('业主反馈平台 v2.1 已加载（GitHub Issues 云端后端 + 草稿保存）');
 </script>
 </body>
 </html>
