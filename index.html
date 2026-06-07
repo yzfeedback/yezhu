@@ -961,6 +961,72 @@ function exportData() {
   showToast(`✅ 已备份 ${allFeedbacks.length} 条`, 'success');
 }
 
+// ==================== 微信切后台恢复 ====================
+// 微信内置浏览器切到后台再切回来时，页面可能被销毁重新加载。
+// 我们用 pageshow/pagehide + visibilitychange 来尽可能恢复状态。
+
+let pageHiddenTime = 0;
+
+// pageshow: 页面显示时触发（包括从 bfcache 恢复）
+window.addEventListener('pageshow', (e) => {
+  if (e.persisted) {
+    // 从浏览器缓存恢复，尝试恢复草稿
+    restoreDraftSilent();
+  }
+  pageHiddenTime = 0;
+});
+
+// pagehide: 页面隐藏时触发
+window.addEventListener('pagehide', () => {
+  pageHiddenTime = Date.now();
+  // 确保草稿已保存
+  saveDraft();
+});
+
+// visibilitychange: 微信切后台/前台
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    // 从后台切回前台
+    const hiddenDuration = pageHiddenTime ? Date.now() - pageHiddenTime : 0;
+    // 如果隐藏超过 5 秒，尝试恢复草稿（微信可能已销毁页面重载）
+    if (hiddenDuration > 5000 || !pageHiddenTime) {
+      restoreDraftSilent();
+    }
+    pageHiddenTime = 0;
+  } else {
+    pageHiddenTime = Date.now();
+    saveDraft();
+  }
+});
+
+// 页面即将卸载前保存
+window.addEventListener('beforeunload', () => {
+  saveDraft();
+});
+
+// 静默恢复草稿（有内容才提示）
+function restoreDraftSilent() {
+  try {
+    const draft = JSON.parse(localStorage.getItem(DRAFT_KEY));
+    if (!draft) return;
+    const hasContent = draft.category || draft.description || (draft.files && draft.files.length > 0);
+    if (!hasContent) return;
+
+    // 如果表单当前为空，自动填充
+    const curCat = document.getElementById('category').value;
+    const curDesc = document.getElementById('description').value;
+    if (!curCat && !curDesc && uploadedFiles.length === 0) {
+      if (draft.category) document.getElementById('category').value = draft.category;
+      if (draft.description) document.getElementById('description').value = draft.description;
+      if (draft.files && draft.files.length > 0) {
+        uploadedFiles = draft.files;
+        renderPreviews();
+      }
+      showToast('📝 已恢复上次填写的内容', 'success');
+    }
+  } catch (e) {}
+}
+
 // ==================== 初始化 ====================
 // 绑定草稿自动保存
 document.getElementById('category').addEventListener('change', onDraftChange);
@@ -969,7 +1035,7 @@ document.getElementById('description').addEventListener('input', onDraftChange);
 // 加载草稿
 loadDraft();
 
-console.log('业主反馈平台 v2.2 已加载（GitHub Issues 云端后端 + 草稿保存 + 图片自动压缩）');
+console.log('业主反馈平台 v2.3 已加载（微信切后台自动恢复 + 图片自动压缩 + 草稿保存）');
 </script>
 </body>
 </html>
